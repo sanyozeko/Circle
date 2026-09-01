@@ -445,7 +445,7 @@ local function Announce()
     if #pending == 0 then return end
     for _, line in ipairs(pending) do Print(line) end
 
-    if DB().sound ~= false then
+    if DB().sound then
         if not pcall(PlaySoundFile, "Sound\\Interface\\RaidWarning.wav") then
             pcall(PlaySound, "RaidWarning")
         end
@@ -478,6 +478,7 @@ ev:SetScript("OnEvent", function(_, event, arg1)
         local db = DB()
         if db.shown == nil then db.shown = true end
         if db.remindMinutes == nil then db.remindMinutes = 0 end
+        if db.sound == nil then db.sound = false end
 
         -- Значения по умолчанию поменялись уже после первых установок:
         -- напоминания выключены, вид - кнопка у миникарты. Применяем один раз,
@@ -485,6 +486,10 @@ ev:SetScript("OnEvent", function(_, event, arg1)
         if not db.ver then
             db.ver = 2
             db.remindMinutes = 0
+        end
+        if db.ver < 4 then
+            db.ver = 4
+            db.sound = false
         end
         if db.ver < 3 then
             db.ver = 3
@@ -649,8 +654,8 @@ SlashCmdList["CIRCLEDW"] = function(msg)
     end
 
     if arg == "sound" then
-        DB().sound = (DB().sound == false)
-        Print("звук: " .. (DB().sound ~= false and "включён" or "выключён"))
+        DB().sound = not DB().sound
+        Print("звук: " .. (DB().sound and "включён" or "выключён"))
         return
     end
 

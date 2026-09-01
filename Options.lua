@@ -104,7 +104,7 @@ local function BuildOptions()
         for key, check in pairs(checks) do
             check:SetChecked(key == ns.Style())
         end
-        sound:SetChecked(db.sound ~= false)
+        sound:SetChecked(db.sound == true)
         slider:SetValue(db.remindMinutes or 0)
     end
 
