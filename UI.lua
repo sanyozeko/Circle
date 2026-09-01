@@ -1,63 +1,108 @@
 local ADDON, ns = ...
 
--- Небольшое окно со списком: по строке на группу заданий, под ней - персонажи,
--- у которых задание лежит в журнале.
+-- Окно повторяет вид трекера Questie: прозрачный фон, та же типографика и
+-- отступы. Значения ниже взяты из самого Questie, а не подобраны на глаз:
+-- шрифт Friz Quadrata, размеры 12/10/10, отступы 14/36/46, цвета заголовка
+-- зоны, повторяемого задания и строки цели.
 
-local WIDTH, PAD, ROW_H, SUB_H = 250, 12, 16, 13
+local FONT = "Fonts\\FRIZQT__.TTF"
 
-local COLOR = {
-    available = { 0.20, 1.00, 0.20 },   -- можно взять
-    inlog     = { 1.00, 0.82, 0.00 },   -- взято этим персонажем
-    elsewhere = { 1.00, 0.82, 0.00 },   -- взято другим
-    done      = { 0.45, 0.45, 0.45 },   -- выполнено
-}
+local SIZE_ZONE, SIZE_QUEST, SIZE_OBJECTIVE = 12, 10, 10
+local MARGIN_ZONE, MARGIN_QUEST, MARGIN_OBJECTIVE = 14, 36, 46
+local MARGIN_RIGHT = 30
 
-local BACKDROP = {
-    bgFile   = "Interface\\DialogFrame\\UI-DialogBox-Background",
-    edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
-    tile     = true, tileSize = 32, edgeSize = 16,
-    insets   = { left = 5, right = 5, top = 5, bottom = 5 },
-}
+local COLOR_ZONE      = "|cFFC0C0C0"    -- заголовок зоны
+local COLOR_REPEAT    = "|cFF21CCE7"    -- повторяемое задание
+local COLOR_OBJECTIVE = "|cFFEEEEEE"    -- строка цели
 
-local frame, rows
+local ZONE_TITLE = "WoW Circle Ежедневное и еженедельное"
 
-local function StateText(kind)
-    local state = ns.KindState(kind)
+local ICON_AVAILABLE  = "Interface\\GossipFrame\\AvailableQuestIcon"
+local ICON_INCOMPLETE = "Interface\\GossipFrame\\IncompleteQuestIcon"
+local ICON_COMPLETE   = "Interface\\GossipFrame\\ActiveQuestIcon"
 
-    if state == "done" then
-        local record = ns.AccountDone()[kind]
-        local left = record and record.expires and (record.expires - time())
-        if left and left > 0 then
-            return "выполнено · " .. ns.FormatTime(left), state
+local frame, lines, lineCount
+
+-- --------------------------------------------------------------- строки ---
+local function GetLine(index)
+    if lines[index] then return lines[index] end
+
+    local line = CreateFrame("Button", nil, frame)
+    line:SetHeight(SIZE_ZONE + 2)
+    line:RegisterForClicks("LeftButtonUp")
+
+    line.icon = line:CreateTexture(nil, "ARTWORK")
+    line.icon:SetWidth(SIZE_QUEST + 4)
+    line.icon:SetHeight(SIZE_QUEST + 4)
+
+    line.label = line:CreateFontString(nil, "OVERLAY")
+    line.label:SetJustifyH("LEFT")
+
+    line.highlight = line:CreateTexture(nil, "BACKGROUND")
+    line.highlight:SetAllPoints(line)
+    line.highlight:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+    line.highlight:SetBlendMode("ADD")
+    line.highlight:SetAlpha(0.25)
+    line.highlight:Hide()
+
+    line:SetScript("OnEnter", function(self)
+        if self.kind then self.highlight:Show() end
+    end)
+    line:SetScript("OnLeave", function(self) self.highlight:Hide() end)
+
+    -- У этих заданий нет NPC: и взять, и сдать можно только через меню.
+    line:SetScript("OnClick", function(self)
+        if not self.kind then return end
+        if ns.KindState(self.kind) == "done" then
+            ns.Print(ns.KIND_LABEL[self.kind] .. " уже выполнено в этом периоде.")
+            return
         end
-        return "выполнено", state
-    end
+        local id, quest = ns.QuestInLog(self.kind)
+        local ready = false
+        if id then
+            local _, _, isDone = ns.Progress(id)
+            ready = isDone and true or false
+        end
+        ns.OpenMenu(self.kind, (ready and quest) and quest.name or nil)
+    end)
 
-    if state == "inlog" then
-        local id = ns.QuestInLog(kind)
-        local c, n, done = ns.Progress(id)
-        if done then return "готово к сдаче", state end
-        if c then return ("взято · %d/%d"):format(c, n), state end
-        return "взято", state
-    end
-
-    if state == "elsewhere" then return "взято на другом", state end
-    return "можно взять", state
+    lines[index] = line
+    return line
 end
 
-local function SavePoint()
-    local point, _, relPoint, x, y = frame:GetPoint()
-    ns.DB().point = { point, relPoint, x, y }
+local function AddLine(text, size, margin, icon, kind)
+    lineCount = lineCount + 1
+    local line = GetLine(lineCount)
+
+    line.kind = kind
+    line.label:SetFont(FONT, size, "")
+    line.label:SetText(text)
+
+    if icon then
+        line.icon:SetTexture(icon)
+        line.icon:ClearAllPoints()
+        line.icon:SetPoint("LEFT", line, "LEFT", margin - SIZE_QUEST - 6, 0)
+        line.icon:Show()
+    else
+        line.icon:Hide()
+    end
+
+    line.label:ClearAllPoints()
+    line.label:SetPoint("LEFT", line, "LEFT", margin, 0)
+    line:SetHeight(size + 4)
+    line:Show()
+
+    return line
 end
 
+-- ---------------------------------------------------------------- сборка --
 function ns.BuildUI()
     if frame then return end
 
+    -- Прозрачный фон, как у трекера Questie: рамки нет вообще.
     frame = CreateFrame("Frame", "CircleDailyWeeklyFrame", UIParent)
-    frame:SetWidth(WIDTH)
-    frame:SetHeight(90)
-    frame:SetBackdrop(BACKDROP)
-    frame:SetBackdropColor(0, 0, 0, 0.85)
+    frame:SetWidth(220)
+    frame:SetHeight(40)
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
     frame:EnableMouse(true)
@@ -67,121 +112,103 @@ function ns.BuildUI()
     end)
     frame:SetScript("OnDragStop", function(self)
         self:StopMovingOrSizing()
-        SavePoint()
+        local point, _, relPoint, x, y = self:GetPoint()
+        ns.DB().point = { point, relPoint, x, y }
     end)
 
-    frame.title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    frame.title:SetPoint("TOP", frame, "TOP", 0, -10)
-    frame.title:SetText("WoW Circle")
-
-    frame.close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
-    frame.close:SetWidth(24)
-    frame.close:SetHeight(24)
-    frame.close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -4)
-    frame.close:SetScript("OnClick", function()
-        ns.DB().shown = false
-        ns.Refresh()
-    end)
-
-    rows = {}
-    for i, kind in ipairs(ns.KINDS) do
-        local row = CreateFrame("Button", nil, frame)
-        row.kind = kind
-        row:SetWidth(WIDTH - PAD * 2)
-        row:SetHeight(ROW_H)
-        row:RegisterForClicks("LeftButtonUp")
-
-        row.label = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        row.label:SetPoint("LEFT", row, "LEFT", 0, 0)
-        row.label:SetJustifyH("LEFT")
-        row.label:SetText(ns.KIND_LABEL[kind])
-
-        row.state = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.state:SetPoint("RIGHT", row, "RIGHT", 0, 0)
-        row.state:SetJustifyH("RIGHT")
-
-        row.highlight = row:CreateTexture(nil, "BACKGROUND")
-        row.highlight:SetAllPoints(row)
-        row.highlight:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
-        row.highlight:SetBlendMode("ADD")
-        row.highlight:SetAlpha(0.25)
-        row.highlight:Hide()
-
-        row:SetScript("OnEnter", function(self) self.highlight:Show() end)
-        row:SetScript("OnLeave", function(self) self.highlight:Hide() end)
-
-        -- У этих заданий нет NPC: и взять, и сдать можно только через меню.
-        row:SetScript("OnClick", function(self)
-            local state = ns.KindState(self.kind)
-            if state == "done" then
-                ns.Print(ns.KIND_LABEL[self.kind] .. " уже выполнено в этом периоде.")
-                return
-            end
-            -- Осторожно: "id and ns.Progress(id)" срезало бы результат до
-            -- одного значения, и done всегда был бы nil.
-            local id, quest = ns.QuestInLog(self.kind)
-            local ready = false
-            if id then
-                local _, _, isDone = ns.Progress(id)
-                ready = isDone and true or false
-            end
-            ns.OpenMenu(self.kind, (ready and quest) and quest.name or nil)
-        end)
-
-        -- Подстроки: у кого задание лежит.
-        row.subs = {}
-        for j = 1, 4 do
-            local sub = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-            sub:SetPoint("TOPLEFT", row, "BOTTOMLEFT", 8, -(j - 1) * SUB_H - 1)
-            sub:SetJustifyH("LEFT")
-            sub:Hide()
-            row.subs[j] = sub
-        end
-
-        rows[i] = row
-    end
+    lines = {}
 
     local point = ns.DB().point or {}
-    frame:SetPoint(point[1] or "CENTER", UIParent, point[2] or "CENTER",
-                   point[3] or 300, point[4] or 150)
+    frame:SetPoint(point[1] or "TOPRIGHT", UIParent, point[2] or "TOPRIGHT",
+                   point[3] or -60, point[4] or -220)
 
     ns.Refresh()
 end
 
+-- ------------------------------------------------------------- обновление --
 function ns.Refresh()
     if not frame then return end
+
+    for _, line in ipairs(lines) do
+        line:Hide()
+        line.kind = nil
+    end
+    lineCount = 0
 
     if not ns.DB().shown then
         frame:Hide()
         return
     end
-    frame:Show()
 
-    local y = 30
-    for _, row in ipairs(rows) do
-        local text, state = StateText(row.kind)
-        local c = COLOR[state]
+    -- Собираем содержимое: только то, что требует действия. Выполненное в этом
+    -- периоде не показываем - как и в версии для Questie.
+    local body = {}
+    for _, kind in ipairs(ns.KINDS) do
+        local state = ns.KindState(kind)
+        if state ~= "done" then
+            local id, quest = ns.QuestInLog(kind)
 
-        row.state:SetText(text)
-        row.state:SetTextColor(c[1], c[2], c[3])
-        row.label:SetTextColor(c[1], c[2], c[3])
-
-        row:ClearAllPoints()
-        row:SetPoint("TOPLEFT", frame, "TOPLEFT", PAD, -y)
-        y = y + ROW_H
-
-        local shown = 0
-        for _, sub in ipairs(row.subs) do sub:Hide() end
-        for _, held in ipairs(ns.OthersHolding(row.kind)) do
-            shown = shown + 1
-            local sub = row.subs[shown]
-            if not sub then break end
-            sub:SetText(("%s - %s: %d/%d%s"):format(held.char, held.desc,
-                held.c, held.n, held.done and " готово" or ""))
-            sub:Show()
-            y = y + SUB_H
+            if id then
+                -- Задание в журнале: показываем его настоящее имя и прогресс,
+                -- ровно как трекер Questie показывает обычный квест.
+                local collected, needed, done = ns.Progress(id)
+                body[#body + 1] = {
+                    text = COLOR_REPEAT .. "[80] " .. quest.name .. "|r",
+                    size = SIZE_QUEST, margin = MARGIN_QUEST, kind = kind,
+                    icon = done and ICON_COMPLETE or ICON_INCOMPLETE,
+                }
+                if collected then
+                    body[#body + 1] = {
+                        text = ("%s- %s: %d/%d|r"):format(COLOR_OBJECTIVE,
+                            ns.ShortName(quest), collected, needed),
+                        size = SIZE_OBJECTIVE, margin = MARGIN_OBJECTIVE,
+                    }
+                end
+            else
+                body[#body + 1] = {
+                    text = COLOR_REPEAT .. "[80] " .. ns.KIND_LABEL[kind] .. " испытание|r",
+                    size = SIZE_QUEST, margin = MARGIN_QUEST, kind = kind,
+                    icon = ICON_AVAILABLE,
+                }
+                for _, held in ipairs(ns.OthersHolding(kind)) do
+                    body[#body + 1] = {
+                        text = ("%s- %s: %s %d/%d%s|r"):format(COLOR_OBJECTIVE,
+                            held.char, held.desc, held.c, held.n,
+                            held.done and " (готово)" or ""),
+                        size = SIZE_OBJECTIVE, margin = MARGIN_OBJECTIVE,
+                    }
+                end
+            end
         end
     end
 
-    frame:SetHeight(y + 10)
+    if #body == 0 then
+        frame:Hide()
+        return
+    end
+    frame:Show()
+
+    local widest = 0
+    local y = 4
+
+    local zone = AddLine(COLOR_ZONE .. ZONE_TITLE .. "|r", SIZE_ZONE, MARGIN_ZONE)
+    zone:ClearAllPoints()
+    zone:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, -y)
+    widest = math.max(widest, zone.label:GetStringWidth() + MARGIN_ZONE)
+    y = y + SIZE_ZONE + 4
+
+    for _, item in ipairs(body) do
+        local line = AddLine(item.text, item.size, item.margin, item.icon, item.kind)
+        line:ClearAllPoints()
+        line:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, -y)
+        widest = math.max(widest, line.label:GetStringWidth() + item.margin)
+        y = y + item.size + 4
+    end
+
+    for _, line in ipairs(lines) do
+        line:SetWidth(widest + MARGIN_RIGHT)
+    end
+
+    frame:SetWidth(widest + MARGIN_RIGHT)
+    frame:SetHeight(y + 4)
 end
