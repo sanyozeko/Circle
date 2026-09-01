@@ -22,6 +22,7 @@ local ICON_INCOMPLETE = "Interface\\GossipFrame\\IncompleteQuestIcon"
 local ICON_COMPLETE   = "Interface\\GossipFrame\\ActiveQuestIcon"
 
 local frame, lines, lineCount
+local RenderList          -- объявлено заранее: BuildList вызывает её ниже по файлу
 
 -- --------------------------------------------------------------- строки ---
 local function GetLine(index)
@@ -96,7 +97,7 @@ local function AddLine(text, size, margin, icon, kind)
 end
 
 -- ---------------------------------------------------------------- сборка --
-function ns.BuildUI()
+local function BuildList()
     if frame then return end
 
     -- Прозрачный фон, как у трекера Questie: рамки нет вообще.
@@ -122,11 +123,11 @@ function ns.BuildUI()
     frame:SetPoint(point[1] or "TOPRIGHT", UIParent, point[2] or "TOPRIGHT",
                    point[3] or -60, point[4] or -220)
 
-    ns.Refresh()
+    RenderList()
 end
 
 -- ------------------------------------------------------------- обновление --
-function ns.Refresh()
+function RenderList()
     if not frame then return end
 
     for _, line in ipairs(lines) do
@@ -135,7 +136,7 @@ function ns.Refresh()
     end
     lineCount = 0
 
-    if not ns.DB().shown then
+    if ns.Style() ~= "list" or not ns.DB().shown then
         frame:Hide()
         return
     end
@@ -212,3 +213,6 @@ function ns.Refresh()
     frame:SetWidth(widest + MARGIN_RIGHT)
     frame:SetHeight(y + 4)
 end
+
+table.insert(ns.builders, BuildList)
+table.insert(ns.renderers, RenderList)

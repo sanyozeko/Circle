@@ -7,3 +7,5 @@
 
 Core.lua
 UI.lua
+Indicator.lua
+Options.lua

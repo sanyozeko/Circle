@@ -56,6 +56,39 @@ local function Norm(text)
     return (tostring(text or ""):lower():gsub("%s+", " "))
 end
 
+-- Способов показать состояние несколько (значок, кнопка на миникарте, список),
+-- поэтому Core их не знает: каждый модуль отображения сам себя регистрирует.
+ns.builders = {}
+ns.renderers = {}
+
+-- Сломанный модуль отображения не должен ронять остальные, но и молча
+-- исчезать он тоже не должен: об ошибке сообщаем один раз.
+local reported = {}
+
+local function Run(fn, what)
+    local ok, err = pcall(fn)
+    if (not ok) and (not reported[fn]) then
+        reported[fn] = true
+        Print("|cffff4040ошибка|r в " .. what .. ": " .. tostring(err))
+    end
+end
+
+function ns.Build()
+    for _, build in ipairs(ns.builders) do Run(build, "сборке интерфейса") end
+end
+
+function ns.Refresh()
+    for _, render in ipairs(ns.renderers) do Run(render, "отрисовке") end
+end
+
+-- "badge" - значок, видно только когда есть дело
+-- "minimap" - кнопка у миникарты, видно всегда
+-- "list" - список строк в стиле трекера Questie
+function ns.Style()
+    local style = ns.DB and ns.DB().style
+    return style or "badge"
+end
+
 -- ------------------------------------------------------------- сохранения --
 local function DB()
     CircleDailyWeeklyDB = CircleDailyWeeklyDB or {}
@@ -358,6 +391,20 @@ function ns.QuestInLog(kind)
     end
 end
 
+-- Есть ли то, что требует действия прямо сейчас.
+function ns.Pending()
+    for _, kind in ipairs(ns.KINDS) do
+        local state = ns.KindState(kind)
+        if state == "available" then return true, kind, "available" end
+        if state == "inlog" then
+            local id = ns.QuestInLog(kind)
+            local _, _, done = ns.Progress(id)
+            if done then return true, kind, "turnin" end
+        end
+    end
+    return false
+end
+
 -- ------------------------------------------------------------- напоминание --
 local function Announce()
     local pending = {}
@@ -413,7 +460,7 @@ ev:SetScript("OnEvent", function(_, event, arg1)
         local db = DB()
         if db.remindMinutes == nil then db.remindMinutes = 30 end
         if db.shown == nil then db.shown = true end
-        if ns.BuildUI then ns.BuildUI() end
+        ns.Build()
 
     elseif event == "GOSSIP_SHOW" then
         HandleGossip()
@@ -546,6 +593,14 @@ SlashCmdList["CIRCLEDW"] = function(msg)
         return
     end
 
+    local style = arg:match("^style%s+(%a+)$")
+    if style == "badge" or style == "minimap" or style == "list" then
+        ns.DB().style = style
+        Print("вид: " .. style)
+        ns.Refresh()
+        return
+    end
+
     local minutes = arg:match("^remind%s+(%d+)$")
     if minutes then
         DB().remindMinutes = tonumber(minutes)
@@ -587,6 +642,7 @@ SlashCmdList["CIRCLEDW"] = function(msg)
         return
     end
 
-    Print("команды: |cff00ff00/cdw|r окно, |cff00ff00status|r, |cff00ff00take|r, |cff00ff00daily|r, |cff00ff00weekly|r")
+    Print("команды: |cff00ff00/cdw|r показать, |cff00ff00status|r, |cff00ff00take|r, |cff00ff00daily|r, |cff00ff00weekly|r")
+    Print("вид: |cff00ff00/cdw style badge|minimap|list|r")
     Print("ещё: |cff00ff00done daily|r, |cff00ff00undone weekly|r, |cff00ff00remind 30|r, |cff00ff00sound|r, |cff00ff00lock|r")
 end
