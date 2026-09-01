@@ -472,11 +472,7 @@ local function Announce()
     if #pending == 0 then return end
     for _, line in ipairs(pending) do Print(line) end
 
-    if DB().sound then
-        if not pcall(PlaySoundFile, "Sound\\Interface\\RaidWarning.wav") then
-            pcall(PlaySound, "RaidWarning")
-        end
-    end
+    if DB().sound then ns.PlayAlert() end
     if RaidNotice_AddMessage and RaidWarningFrame then
         RaidNotice_AddMessage(RaidWarningFrame, "WoW Circle: есть задания",
             ChatTypeInfo["RAID_WARNING"])
