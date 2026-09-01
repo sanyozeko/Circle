@@ -487,6 +487,11 @@ ns.events = ev
 local queryDelay, pollTimer, tickTimer = nil, 0, 0
 local remindTimer, loginTimer = 0, nil
 
+-- PLAYER_ENTERING_WORLD приходит на КАЖДОМ экране загрузки: вход в подземелье,
+-- выход, портал, телепорт. Приветствие должно быть одно на сессию, иначе аддон
+-- здоровается после каждой загрузки.
+local greeted = false
+
 ev:RegisterEvent("ADDON_LOADED")
 ev:RegisterEvent("PLAYER_ENTERING_WORLD")
 ev:RegisterEvent("QUEST_QUERY_COMPLETE")
@@ -538,8 +543,11 @@ ev:SetScript("OnEvent", function(_, event, arg1)
     elseif event == "PLAYER_ENTERING_WORLD" then
         logIndexDirty = true
         queryDelay = 5
-        loginTimer = 0
         UpdateSnapshot()
+        if not greeted then
+            greeted = true
+            loginTimer = 0
+        end
 
     elseif event == "QUEST_QUERY_COMPLETE" then
         if not GetQuestsCompleted then return end
