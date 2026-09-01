@@ -41,9 +41,8 @@
 
 ## Установка
 
-1. Скачать архив со страницы
-   [Releases](https://github.com/sanyozeko/Circle/releases/latest)
-   — папка внутри уже названа правильно.
+1. Скачать: зелёная кнопка `Code` → `Download ZIP`.
+   Папка внутри уже названа правильно, переименовывать ничего не нужно.
 2. Распаковать в `<папка игры>\Interface\AddOns\` так, чтобы получилось
    `Interface\AddOns\Circle-DailyWeekly\Circle-DailyWeekly.toc`
 3. **Полностью перезапустить игру** — новую папку аддона `/reload` не подхватит.
