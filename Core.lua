@@ -40,6 +40,10 @@ local MENU_PATH = {
     weekly = { "Особые задания", "Еженедельные испытания" },
 }
 
+-- Свой звук напоминания. Формат тот же, что у рабочих файлов DBM в этом
+-- клиенте: MPEG-1 Layer III, 44100 Гц, 128 кбит/с, без ID3-тега.
+local ALERT_SOUND = "Interface\\AddOns\\Circle-DailyWeekly\\Sounds\\alert.mp3"
+
 local QUERY_THROTTLE = 60
 local QUERY_INTERVAL = 300
 
@@ -424,6 +428,16 @@ function ns.Pending()
 end
 
 -- ------------------------------------------------------------- напоминание --
+function ns.PlayAlert()
+    local ok = pcall(PlaySoundFile, ALERT_SOUND)
+    if not ok then
+        -- Если свой файл почему-то не проигрался, берём стандартный.
+        if not pcall(PlaySoundFile, "Sound\\Interface\\RaidWarning.wav") then
+            pcall(PlaySound, "RaidWarning")
+        end
+    end
+end
+
 local function Announce()
     local pending = {}
     for _, kind in ipairs(ns.KINDS) do
@@ -653,6 +667,12 @@ SlashCmdList["CIRCLEDW"] = function(msg)
         return
     end
 
+    if arg == "testsound" then
+        ns.PlayAlert()
+        Print("проиграл звук напоминания")
+        return
+    end
+
     if arg == "sound" then
         DB().sound = not DB().sound
         Print("звук: " .. (DB().sound and "включён" or "выключён"))
@@ -689,5 +709,5 @@ SlashCmdList["CIRCLEDW"] = function(msg)
 
     Print("команды: |cff00ff00/cdw|r показать, |cff00ff00status|r, |cff00ff00take|r, |cff00ff00daily|r, |cff00ff00weekly|r")
     Print("вид: |cff00ff00/cdw style none|badge|list|r, кнопка: |cff00ff00/cdw minimap|r")
-    Print("ещё: |cff00ff00done daily|r, |cff00ff00undone weekly|r, |cff00ff00remind 30|r, |cff00ff00sound|r, |cff00ff00lock|r")
+    Print("ещё: |cff00ff00done daily|r, |cff00ff00undone weekly|r, |cff00ff00remind 30|r, |cff00ff00sound|r, |cff00ff00testsound|r, |cff00ff00lock|r")
 end
