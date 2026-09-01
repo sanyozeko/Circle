@@ -118,12 +118,23 @@ local function DB()
 end
 ns.DB = DB
 
--- Отметки о выполнении. Лежат в аккаунтных SavedVariables, поэтому сдача на
--- одном персонаже видна на всех.
+-- SavedVariables общие на весь игровой аккаунт, а вот квесты - нет: x1, x4,
+-- x100 и прочие реалмы это отдельные серверы со своими базами. Сдача на одном
+-- реалме ничего не закрывает на другом, поэтому всё разложено по реалмам.
+local function Realm()
+    local realm = GetRealmName and GetRealmName()
+    if realm and realm ~= "" then return realm end
+    return "?"
+end
+ns.Realm = Realm
+
+-- Отметки о выполнении: общие для всех персонажей аккаунта на этом реалме.
 local function AccountDone()
     local db = DB()
     db.done = db.done or {}
-    return db.done
+    local realm = Realm()
+    db.done[realm] = db.done[realm] or {}
+    return db.done[realm]
 end
 ns.AccountDone = AccountDone
 
@@ -131,7 +142,9 @@ ns.AccountDone = AccountDone
 local function Snapshots()
     local db = DB()
     db.chars = db.chars or {}
-    return db.chars
+    local realm = Realm()
+    db.chars[realm] = db.chars[realm] or {}
+    return db.chars[realm]
 end
 
 -- --------------------------------------------------------------- журнал ---
@@ -500,6 +513,15 @@ ev:SetScript("OnEvent", function(_, event, arg1)
         if not db.ver then
             db.ver = 2
             db.remindMinutes = 0
+        end
+        if db.ver < 5 then
+            db.ver = 5
+            -- Старые отметки лежали одной кучей на весь аккаунт, без реалма.
+            -- Определить задним числом, к какому реалму они относились, нельзя,
+            -- поэтому сбрасываем: ежедневные протухнут за сутки, недельные
+            -- подтвердит сервер.
+            db.done = {}
+            db.chars = {}
         end
         if db.ver < 4 then
             db.ver = 4
