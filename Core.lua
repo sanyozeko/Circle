@@ -81,12 +81,21 @@ function ns.Refresh()
     for _, render in ipairs(ns.renderers) do Run(render, "отрисовке") end
 end
 
--- "badge" - значок, видно только когда есть дело
--- "minimap" - кнопка у миникарты, видно всегда
--- "list" - список строк в стиле трекера Questie
+-- Кнопка у миникарты есть всегда: это постоянная точка входа, чтобы за
+-- настройками и меню заданий не приходилось лезть в интерфейс игры.
+-- Скрыть её можно, но по умолчанию она включена.
+function ns.MinimapShown()
+    return ns.DB().minimap ~= false
+end
+
+-- Дополнительное отображение поверх кнопки:
+--   "none"  - ничего, только кнопка
+--   "badge" - значок, видно лишь пока есть незакрытое дело
+--   "list"  - список строк в стиле трекера Questie
 function ns.Style()
     local style = ns.DB and ns.DB().style
-    return style or "minimap"
+    if style == "minimap" then return "none" end   -- значение из старых версий
+    return style or "none"
 end
 
 -- Открыть свою страницу в настройках игры. В 3.3.5a первый вызов только
@@ -476,7 +485,12 @@ ev:SetScript("OnEvent", function(_, event, arg1)
         if not db.ver then
             db.ver = 2
             db.remindMinutes = 0
-            db.style = db.style or "minimap"
+        end
+        if db.ver < 3 then
+            db.ver = 3
+            -- Кнопка миникарты перестала быть одним из видов и теперь есть
+            -- всегда, поэтому старое значение style больше не имеет смысла.
+            if db.style == "minimap" or db.style == nil then db.style = "none" end
         end
 
         ns.Build()
@@ -612,8 +626,15 @@ SlashCmdList["CIRCLEDW"] = function(msg)
         return
     end
 
+    if arg == "minimap" then
+        ns.DB().minimap = not ns.MinimapShown()
+        Print("кнопка у миникарты: " .. (ns.MinimapShown() and "показана" or "скрыта"))
+        ns.Refresh()
+        return
+    end
+
     local style = arg:match("^style%s+(%a+)$")
-    if style == "badge" or style == "minimap" or style == "list" then
+    if style == "badge" or style == "none" or style == "list" then
         ns.DB().style = style
         Print("вид: " .. style)
         ns.Refresh()
@@ -662,6 +683,6 @@ SlashCmdList["CIRCLEDW"] = function(msg)
     end
 
     Print("команды: |cff00ff00/cdw|r показать, |cff00ff00status|r, |cff00ff00take|r, |cff00ff00daily|r, |cff00ff00weekly|r")
-    Print("вид: |cff00ff00/cdw style badge|minimap|list|r")
+    Print("вид: |cff00ff00/cdw style none|badge|list|r, кнопка: |cff00ff00/cdw minimap|r")
     Print("ещё: |cff00ff00done daily|r, |cff00ff00undone weekly|r, |cff00ff00remind 30|r, |cff00ff00sound|r, |cff00ff00lock|r")
 end

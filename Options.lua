@@ -3,11 +3,11 @@ local ADDON, ns = ...
 -- Панель в стандартных настройках игры: Меню -> Интерфейс -> Аддоны.
 
 local STYLES = {
-    { key = "badge",   name = "Значок",
+    { key = "none",  name = "Ничего",
+      desc = "Только кнопка у миникарты." },
+    { key = "badge", name = "Значок на экране",
       desc = "Появляется, только когда есть незакрытое задание. Пропал - значит всё сделано." },
-    { key = "minimap", name = "Кнопка у миникарты",
-      desc = "Видна всегда, состояние показывает значком. Перетаскивается по кругу." },
-    { key = "list",    name = "Список",
+    { key = "list",  name = "Список",
       desc = "Строки в стиле трекера Questie: что за задание и какой прогресс." },
 }
 
@@ -23,10 +23,26 @@ local function BuildOptions()
     subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
     subtitle:SetWidth(400)
     subtitle:SetJustifyH("LEFT")
-    subtitle:SetText("Как показывать состояние заданий.")
+    subtitle:SetText("Кнопка у миникарты есть всегда: левый клик - меню заданий, правый - эти настройки.")
+
+    local y = -66
+
+    local minimap = CreateFrame("CheckButton", "CircleDWMinimap", panel,
+                                "InterfaceOptionsCheckButtonTemplate")
+    minimap:SetPoint("TOPLEFT", 20, y)
+    _G["CircleDWMinimapText"]:SetText("Показывать кнопку у миникарты")
+    minimap:SetScript("OnClick", function(self)
+        ns.DB().minimap = self:GetChecked() and true or false
+        ns.Refresh()
+    end)
+    y = y - 40
+
+    local extraLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+    extraLabel:SetPoint("TOPLEFT", 20, y)
+    extraLabel:SetText("Дополнительно показывать")
+    y = y - 24
 
     local checks = {}
-    local y = -70
 
     for _, style in ipairs(STYLES) do
         local check = CreateFrame("CheckButton", "CircleDWStyle" .. style.key,
@@ -84,6 +100,7 @@ local function BuildOptions()
     -- измениться слеш-командой.
     panel.refresh = function()
         local db = ns.DB()
+        minimap:SetChecked(ns.MinimapShown())
         for key, check in pairs(checks) do
             check:SetChecked(key == ns.Style())
         end
