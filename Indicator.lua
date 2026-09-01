@@ -58,32 +58,38 @@ local function ShowTooltip(owner, anchor)
     end
 
     GameTooltip:AddLine(" ")
-    GameTooltip:AddLine("ЛКМ - открыть меню заданий", 0.4, 0.8, 1)
+    GameTooltip:AddLine("ЛКМ - выбрать задание", 0.4, 0.8, 1)
     GameTooltip:AddLine("ПКМ - настройки", 0.4, 0.8, 1)
     GameTooltip:AddLine("Перетаскивание - переместить", 0.4, 0.8, 1)
     GameTooltip:Show()
 end
 
--- Что делать по клику: берём первое, что требует действия.
--- Правая кнопка открывает настройки.
-local function ActOnClick(self, button)
-    if button == "RightButton" then
-        ns.OpenOptions()
-        return
+-- Короткое описание состояния для пункта меню.
+local function StateWord(kind)
+    local state = ns.KindState(kind)
+    if state == "done" then
+        local record = ns.AccountDone()[kind]
+        local left = record and record.expires and (record.expires - time())
+        return (left and left > 0)
+            and ("выполнено, сброс через " .. ns.FormatTime(left))
+            or "выполнено", true
     end
-    local pending, kind = ns.Pending()
-    if not pending then
-        kind = ns.KINDS[1]
-        for _, k in ipairs(ns.KINDS) do
-            if ns.KindState(k) ~= "done" then kind = k break end
-        end
+    if state == "inlog" then
+        local id = ns.QuestInLog(kind)
+        local collected, needed, done = ns.Progress(id)
+        if done then return "готово к сдаче", false end
+        return ("взято, %d/%d"):format(collected or 0, needed or 1), false
     end
+    if state == "elsewhere" then return "взято на другом персонаже", false end
+    return "можно взять", false
+end
 
+-- Открыть раздел меню для группы, а для выполненного задания - окно сдачи.
+local function GoTo(kind)
     if ns.KindState(kind) == "done" then
-        ns.Print("на сегодня всё закрыто.")
+        ns.Print(ns.KIND_LABEL[kind] .. " уже выполнено в этом периоде.")
         return
     end
-
     local id, quest = ns.QuestInLog(kind)
     local ready = false
     if id then
@@ -91,6 +97,57 @@ local function ActOnClick(self, button)
         ready = isDone and true or false
     end
     ns.OpenMenu(kind, (ready and quest) and quest.name or nil)
+end
+
+local menuFrame
+
+-- Раньше клик вёл к первому незакрытому делу, и пока доступно ежедневное,
+-- до еженедельного было не добраться вовсе. Теперь оба пункта в меню.
+local function ShowMenu()
+    if not (EasyMenu and UIDropDownMenu_Initialize) then
+        -- Без выпадающих меню ведём хотя бы к первому незакрытому.
+        for _, kind in ipairs(ns.KINDS) do
+            if ns.KindState(kind) ~= "done" then GoTo(kind) return end
+        end
+        ns.Print("на сегодня всё закрыто.")
+        return
+    end
+
+    if not menuFrame then
+        menuFrame = CreateFrame("Frame", "CircleDailyWeeklyMenu", UIParent,
+                                "UIDropDownMenuTemplate")
+    end
+
+    local menu = {
+        { text = "WoW Circle", isTitle = true, notCheckable = true },
+    }
+
+    for _, kind in ipairs(ns.KINDS) do
+        local word, done = StateWord(kind)
+        menu[#menu + 1] = {
+            text = ns.KIND_LABEL[kind] .. " - " .. word,
+            notCheckable = true,
+            disabled = done,
+            func = function() GoTo(kind) end,
+        }
+    end
+
+    menu[#menu + 1] = { text = "", isTitle = true, notCheckable = true }
+    menu[#menu + 1] = {
+        text = "Настройки",
+        notCheckable = true,
+        func = function() ns.OpenOptions() end,
+    }
+
+    EasyMenu(menu, menuFrame, "cursor", 0, 0, "MENU")
+end
+
+local function ActOnClick(self, button)
+    if button == "RightButton" then
+        ns.OpenOptions()
+        return
+    end
+    ShowMenu()
 end
 
 -- Какой значок показывать: что-то доступно / готово к сдаче / всё тихо.
