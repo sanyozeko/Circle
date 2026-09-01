@@ -504,8 +504,10 @@ ev:SetScript("OnUpdate", function(_, elapsed)
 end)
 
 -- ------------------------------------------------------------- команды -----
-SLASH_CIRCLEDW1 = "/circle"
-SLASH_CIRCLEDW2 = "/cdw"
+-- Не занимаем /circle: его регистрирует версия для Questie, и галочка в её
+-- настройках этого не меняет - файл всё равно загружается.
+SLASH_CIRCLEDW1 = "/cdw"
+SLASH_CIRCLEDW2 = "/circledw"
 SlashCmdList["CIRCLEDW"] = function(msg)
     local arg = strlower(strtrim(msg or ""))
 
@@ -585,6 +587,6 @@ SlashCmdList["CIRCLEDW"] = function(msg)
         return
     end
 
-    Print("команды: |cff00ff00/circle|r окно, |cff00ff00take|r, |cff00ff00daily|r, |cff00ff00weekly|r, |cff00ff00status|r")
+    Print("команды: |cff00ff00/cdw|r окно, |cff00ff00status|r, |cff00ff00take|r, |cff00ff00daily|r, |cff00ff00weekly|r")
     Print("ещё: |cff00ff00done daily|r, |cff00ff00undone weekly|r, |cff00ff00remind 30|r, |cff00ff00sound|r, |cff00ff00lock|r")
 end
