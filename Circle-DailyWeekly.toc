@@ -1,0 +1,9 @@
+## Interface: 30300
+## Title: WoW Circle|cff00ff00:|r daily & weekly
+## Notes: Ezhednevnye i ezhenedelnye zadaniya WoW Circle. Rabotaet bez Questie.
+## Author: sanyozeko
+## Version: 1.0.0
+## SavedVariables: CircleDailyWeeklyDB
+
+Core.lua
+UI.lua

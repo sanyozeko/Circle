@@ -1,0 +1,590 @@
+local ADDON, ns = ...
+
+-- Ежедневные и еженедельные задания WoW Circle, без Questie.
+-- Вся логика состояния здесь, окно - в UI.lua.
+
+CircleDW = ns
+
+-- ===========================================================================
+--  СПИСОК ЗАДАНИЙ
+-- ===========================================================================
+-- На аккаунт можно выполнить ОДНО задание из группы за период: одно из четырёх
+-- ежедневных в день и одно из семи еженедельных в неделю. Поэтому напоминание
+-- одно на группу, и один сданный квест закрывает всю группу до сброса.
+ns.QUESTS = {
+    [50016] = { kind = "weekly", name = "Испытание подземелий" },
+    [50017] = { kind = "weekly", name = "Испытание рейда" },
+    [50018] = { kind = "weekly", name = "Испытание полей боя" },
+    [50019] = { kind = "weekly", name = "Испытание полей боя: урон" },
+    [50020] = { kind = "weekly", name = "Испытание полей боя: исцеление" },
+    [50021] = { kind = "weekly", name = "Испытание арены: 2х2 / 3х3" },
+    [50022] = { kind = "weekly", name = "Испытание арены: 1х1 / 3х3 соло" },
+
+    [50023] = { kind = "daily",  name = "Ежедневное испытание подземелий" },
+    [50024] = { kind = "daily",  name = "Ежедневное испытание полей боя" },
+    [50025] = { kind = "daily",  name = "Ежедневное испытание арены" },
+    [50026] = { kind = "daily",  name = "Ежедневное испытание рейда" },
+}
+
+ns.KINDS = { "daily", "weekly" }
+ns.KIND_LABEL = { daily = "Ежедневное", weekly = "Еженедельное" }
+
+-- День недельного сброса: 1=Вс, 2=Пн, 3=Вт, 4=Ср, 5=Чт, 6=Пт, 7=Сб.
+-- На Circle - среда 04:00. Час берётся с сервера через GetQuestResetTime.
+local WEEKLY_RESET_WDAY = 4
+
+-- Путь по пунктам серверного меню до списка заданий.
+local MENU_COMMAND = ".menu"
+local MENU_PATH = {
+    daily  = { "Особые задания", "Ежедневные испытания" },
+    weekly = { "Особые задания", "Еженедельные испытания" },
+}
+
+local QUERY_THROTTLE = 60
+local QUERY_INTERVAL = 300
+
+-- ===========================================================================
+
+local floor, format = math.floor, string.format
+
+local function Print(msg)
+    DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99Circle|r: " .. tostring(msg))
+end
+ns.Print = Print
+
+local function Norm(text)
+    return (tostring(text or ""):lower():gsub("%s+", " "))
+end
+
+-- ------------------------------------------------------------- сохранения --
+local function DB()
+    CircleDailyWeeklyDB = CircleDailyWeeklyDB or {}
+    return CircleDailyWeeklyDB
+end
+ns.DB = DB
+
+-- Отметки о выполнении. Лежат в аккаунтных SavedVariables, поэтому сдача на
+-- одном персонаже видна на всех.
+local function AccountDone()
+    local db = DB()
+    db.done = db.done or {}
+    return db.done
+end
+ns.AccountDone = AccountDone
+
+-- Срезы состояния по персонажам: клиент видит журнал только текущего.
+local function Snapshots()
+    local db = DB()
+    db.chars = db.chars or {}
+    return db.chars
+end
+
+-- --------------------------------------------------------------- журнал ---
+-- Один проход вместо поиска по каждому заданию: на 3.3.5a ID лежит девятым
+-- значением GetQuestLogTitle.
+local logIndexMap, logIndexDirty = {}, true
+
+local function LogIndex()
+    if logIndexDirty then
+        local map = {}
+        local count = GetNumQuestLogEntries and GetNumQuestLogEntries() or 0
+        for i = 1, count do
+            local _, _, _, _, isHeader, _, _, _, id = GetQuestLogTitle(i)
+            if id and not isHeader then map[id] = i end
+        end
+        logIndexMap, logIndexDirty = map, false
+    end
+    return logIndexMap
+end
+
+local function InQuestLog(questId)
+    return LogIndex()[questId] ~= nil
+end
+ns.InQuestLog = InQuestLog
+
+-- Прогресс задания из живого журнала: "3/7".
+local function Progress(questId)
+    local index = LogIndex()[questId]
+    if not index then return nil end
+
+    local collected, needed = 0, 1
+    if (GetNumQuestLeaderBoards(index) or 0) > 0 then
+        local text = GetQuestLogLeaderBoard(1, index)
+        local c, n = tostring(text or ""):match("(%d+)%s*/%s*(%d+)")
+        collected = tonumber(c) or 0
+        needed = tonumber(n) or 1
+    end
+
+    local _, _, _, _, _, _, isComplete = GetQuestLogTitle(index)
+    return collected, needed, (isComplete == 1)
+end
+ns.Progress = Progress
+
+-- ------------------------------------------------------------- сбросы -----
+local function NextDailyReset()
+    local seconds = GetQuestResetTime and GetQuestResetTime() or 0
+    if seconds and seconds > 60 and seconds < 86400 * 2 then
+        return time() + seconds     -- время сервера, а не часы компьютера
+    end
+    return time() + 86400
+end
+
+local function NextWeeklyReset()
+    local dailyReset = NextDailyReset()
+    for i = 0, 7 do
+        local moment = dailyReset + i * 86400
+        if (tonumber(date("%w", moment)) + 1) == WEEKLY_RESET_WDAY then
+            return moment
+        end
+    end
+    return dailyReset + 7 * 86400
+end
+
+local function ResetFor(kind)
+    return (kind == "weekly") and NextWeeklyReset() or NextDailyReset()
+end
+ns.ResetFor = ResetFor
+ns.NextDailyReset = NextDailyReset
+ns.NextWeeklyReset = NextWeeklyReset
+
+function ns.FormatTime(seconds)
+    if not seconds or seconds < 0 then seconds = 0 end
+    local d = floor(seconds / 86400)
+    local h = floor((seconds % 86400) / 3600)
+    local m = floor((seconds % 3600) / 60)
+    if d > 0 then return format("%dд %dч", d, h) end
+    if h > 0 then return format("%dч %02dм", h, m) end
+    return format("%dм", m)
+end
+
+-- ------------------------------------------------------- состояние сервера --
+-- Список награждённых квестов - единственный надёжный источник для еженедельных.
+-- Ежедневные ядро туда не кладёт, для них работает наблюдение за сдачей.
+local completed = nil
+local lastQuery = 0
+
+local function Query(force)
+    if not QueryQuestsCompleted then return end
+    local now = GetTime()
+    if (not force) and (now - lastQuery) < QUERY_THROTTLE then return end
+    lastQuery = now
+    pcall(QueryQuestsCompleted)
+end
+ns.Query = Query
+
+function ns.ServerSaysDone(questId)
+    return completed and completed[questId] or false
+end
+
+-- "done" | "inlog" | "elsewhere" | "available"
+function ns.KindState(kind)
+    local inLog = false
+    for id, quest in pairs(ns.QUESTS) do
+        if quest.kind == kind then
+            if completed and completed[id] then return "done" end
+            if InQuestLog(id) then inLog = true end
+        end
+    end
+
+    if inLog then return "inlog" end
+
+    local record = AccountDone()[kind]
+    if record then
+        if record.expires and time() < record.expires then return "done" end
+        AccountDone()[kind] = nil       -- срок вышел
+    end
+
+    if #ns.OthersHolding(kind) > 0 then return "elsewhere" end
+    return "available"
+end
+
+-- ------------------------------------------------------ срезы персонажей ---
+-- "Ежедневное испытание рейда" -> "рейда"
+local function ShortName(quest)
+    local name = quest and quest.name or "?"
+    return (name:gsub("^Ежедневное испытание ", ""):gsub("^Испытание ", ""))
+end
+ns.ShortName = ShortName
+
+local function UpdateSnapshot()
+    local me = UnitName("player")
+    if not me then return end
+
+    local mine = {}
+    for id in pairs(ns.QUESTS) do
+        local collected, needed, done = Progress(id)
+        if collected then
+            mine[id] = { c = collected, n = needed, done = done }
+        end
+    end
+
+    Snapshots()[me] = next(mine) and mine or nil
+end
+ns.UpdateSnapshot = UpdateSnapshot
+
+-- Кто из ДРУГИХ персонажей держит задание этой группы.
+function ns.OthersHolding(kind)
+    local me = UnitName("player")
+    local held = {}
+    for charName, entry in pairs(Snapshots()) do
+        if charName ~= me and type(entry) == "table" then
+            for id, info in pairs(entry) do
+                local quest = ns.QUESTS[id]
+                if quest and quest.kind == kind and type(info) == "table" then
+                    held[#held + 1] = {
+                        char = charName,
+                        desc = ShortName(quest),
+                        c = info.c or 0,
+                        n = info.n or 1,
+                        done = info.done,
+                    }
+                end
+            end
+        end
+    end
+    table.sort(held, function(a, b) return a.char < b.char end)
+    return held
+end
+
+-- --------------------------------------------------------------- сдача ----
+local function MarkDone(kind, questId, fromServer)
+    AccountDone()[kind] = {
+        expires = ResetFor(kind),
+        by      = UnitName("player"),
+        questId = questId,
+        srv     = fromServer and true or false,
+    }
+    if ns.Refresh then ns.Refresh() end
+end
+ns.MarkDone = MarkDone
+
+local pendingTurnIn = nil
+
+local function NoteTurnIn(questTitle)
+    if not questTitle then return end
+    local title = Norm(questTitle)
+    for id, quest in pairs(ns.QUESTS) do
+        if Norm(quest.name) == title then
+            MarkDone(quest.kind, id, false)
+            Print(ns.KIND_LABEL[quest.kind] .. " задание сдано.")
+            return
+        end
+    end
+end
+
+hooksecurefunc("GetQuestReward", function()
+    if pendingTurnIn then
+        NoteTurnIn(pendingTurnIn)
+        pendingTurnIn = nil
+    end
+end)
+
+-- ------------------------------------------------------- серверное меню ---
+local pendingMenu = nil
+
+local function FindOption(needle)
+    local count = GetNumGossipOptions and GetNumGossipOptions() or 0
+    if count == 0 then return nil end
+    local options = { GetGossipOptions() }
+    needle = Norm(needle)
+    for i = 1, count do
+        local text = options[(i - 1) * 2 + 1]
+        if text and Norm(text):find(needle, 1, true) then return i end
+    end
+end
+
+-- Документация клиента обрезает список возвратов, поэтому шаг массива выводим
+-- из числа заданий, а не берём на веру.
+local function FindActiveQuest(questName)
+    if not (GetGossipActiveQuests and GetNumGossipActiveQuests) then return nil end
+    local count = GetNumGossipActiveQuests() or 0
+    if count == 0 then return nil end
+
+    local list = { GetGossipActiveQuests() }
+    local stride = floor(#list / count)
+    if stride < 1 then return nil end
+
+    questName = Norm(questName)
+    for i = 1, count do
+        local name = list[(i - 1) * stride + 1]
+        if name and Norm(name):find(questName, 1, true) then return i end
+    end
+end
+
+-- questName задаётся, когда надо открыть окно сдачи конкретного задания.
+function ns.OpenMenu(kind, questName)
+    if not SendChatMessage then return end
+    pendingMenu = { kind = kind, step = 1, questName = questName, expires = GetTime() + 8 }
+    SendChatMessage(MENU_COMMAND, "SAY")
+end
+
+local function HandleGossip()
+    if not pendingMenu then return end
+    if GetTime() > pendingMenu.expires then
+        pendingMenu = nil
+        return
+    end
+
+    local path = MENU_PATH[pendingMenu.kind] or MENU_PATH.daily
+    local step = path[pendingMenu.step]
+
+    if step then
+        local index = FindOption(step)
+        if index then
+            pendingMenu.step = pendingMenu.step + 1
+            pendingMenu.expires = GetTime() + 8
+            SelectGossipOption(index)
+            return
+        end
+    end
+
+    local questName = pendingMenu.questName
+    pendingMenu = nil
+
+    if questName then
+        local index = FindActiveQuest(questName)
+        if index then
+            SelectGossipActiveQuest(index)
+            return
+        end
+    end
+    -- Не нашли: окно остаётся открытым, выбирает игрок.
+end
+
+-- Задание из группы, которое сейчас в журнале. Нужно для клика по строке.
+function ns.QuestInLog(kind)
+    for id, quest in pairs(ns.QUESTS) do
+        if quest.kind == kind and InQuestLog(id) then return id, quest end
+    end
+end
+
+-- ------------------------------------------------------------- напоминание --
+local function Announce()
+    local pending = {}
+    for _, kind in ipairs(ns.KINDS) do
+        local state = ns.KindState(kind)
+        if state == "available" then
+            pending[#pending + 1] = ns.KIND_LABEL[kind] .. " задание можно взять"
+        elseif state == "inlog" then
+            local id = ns.QuestInLog(kind)
+            local c, n, done = Progress(id)
+            if done then
+                pending[#pending + 1] = ns.KIND_LABEL[kind] .. " задание готово к сдаче"
+            elseif c then
+                pending[#pending + 1] = format("%s задание: %d/%d",
+                    ns.KIND_LABEL[kind], c, n)
+            end
+        end
+    end
+
+    if #pending == 0 then return end
+    for _, line in ipairs(pending) do Print(line) end
+
+    if DB().sound ~= false then
+        if not pcall(PlaySoundFile, "Sound\\Interface\\RaidWarning.wav") then
+            pcall(PlaySound, "RaidWarning")
+        end
+    end
+    if RaidNotice_AddMessage and RaidWarningFrame then
+        RaidNotice_AddMessage(RaidWarningFrame, "WoW Circle: есть задания",
+            ChatTypeInfo["RAID_WARNING"])
+    end
+end
+ns.Announce = Announce
+
+-- ----------------------------------------------------------------- события --
+local ev = CreateFrame("Frame")
+ns.events = ev
+
+local queryDelay, pollTimer, tickTimer = nil, 0, 0
+local remindTimer, loginTimer = 0, nil
+
+ev:RegisterEvent("ADDON_LOADED")
+ev:RegisterEvent("PLAYER_ENTERING_WORLD")
+ev:RegisterEvent("QUEST_QUERY_COMPLETE")
+ev:RegisterEvent("QUEST_LOG_UPDATE")
+ev:RegisterEvent("QUEST_COMPLETE")
+ev:RegisterEvent("QUEST_FINISHED")
+ev:RegisterEvent("GOSSIP_SHOW")
+
+ev:SetScript("OnEvent", function(_, event, arg1)
+    if event == "ADDON_LOADED" then
+        if arg1 ~= ADDON then return end
+        local db = DB()
+        if db.remindMinutes == nil then db.remindMinutes = 30 end
+        if db.shown == nil then db.shown = true end
+        if ns.BuildUI then ns.BuildUI() end
+
+    elseif event == "GOSSIP_SHOW" then
+        HandleGossip()
+
+    elseif event == "PLAYER_ENTERING_WORLD" then
+        logIndexDirty = true
+        queryDelay = 5
+        loginTimer = 0
+        UpdateSnapshot()
+
+    elseif event == "QUEST_QUERY_COMPLETE" then
+        if not GetQuestsCompleted then return end
+        local t = {}
+        local ok, r = pcall(GetQuestsCompleted, t)
+        if not ok then return end
+        if type(r) == "table" then t = r end
+        completed = t
+
+        -- Сверяем аккаунтную отметку с ответом сервера.
+        local me = UnitName("player")
+        local done = AccountDone()
+        for _, kind in ipairs(ns.KINDS) do
+            local finishedId
+            for id, quest in pairs(ns.QUESTS) do
+                if quest.kind == kind and t[id] then finishedId = id break end
+            end
+
+            local record = done[kind]
+            if finishedId then
+                MarkDone(kind, finishedId, true)
+            elseif record and record.srv and record.by == me then
+                -- Сервер по тому же персонажу говорит "не выполнено" - был сброс.
+                -- Отметки, поставленные по факту сдачи, так снимать нельзя:
+                -- про ежедневные сервер молчит всегда.
+                done[kind] = nil
+            end
+        end
+        if ns.Refresh then ns.Refresh() end
+
+    elseif event == "QUEST_COMPLETE" then
+        pendingTurnIn = GetTitleText and GetTitleText() or nil
+
+    elseif event == "QUEST_FINISHED" then
+        queryDelay = 3
+
+    elseif event == "QUEST_LOG_UPDATE" then
+        logIndexDirty = true
+        UpdateSnapshot()
+        Query()
+        if ns.Refresh then ns.Refresh() end
+    end
+end)
+
+ev:SetScript("OnUpdate", function(_, elapsed)
+    if queryDelay then
+        queryDelay = queryDelay - elapsed
+        if queryDelay <= 0 then queryDelay = nil; Query(true) end
+    end
+
+    pollTimer = pollTimer + elapsed
+    if pollTimer >= QUERY_INTERVAL then
+        pollTimer = 0
+        Query()
+    end
+
+    tickTimer = tickTimer + elapsed
+    if tickTimer >= 1 then
+        tickTimer = 0
+        if ns.Refresh then ns.Refresh() end
+    end
+
+    if loginTimer then
+        loginTimer = loginTimer + elapsed
+        if loginTimer >= 8 then
+            loginTimer = nil
+            Announce()
+        end
+    end
+
+    local minutes = DB().remindMinutes or 0
+    if minutes > 0 and not loginTimer then
+        remindTimer = remindTimer + elapsed
+        if remindTimer >= minutes * 60 then
+            remindTimer = 0
+            if not UnitAffectingCombat("player") then Announce() end
+        end
+    end
+end)
+
+-- ------------------------------------------------------------- команды -----
+SLASH_CIRCLEDW1 = "/circle"
+SLASH_CIRCLEDW2 = "/cdw"
+SlashCmdList["CIRCLEDW"] = function(msg)
+    local arg = strlower(strtrim(msg or ""))
+
+    if arg == "" then
+        DB().shown = not DB().shown
+        if ns.Refresh then ns.Refresh() end
+        return
+    end
+
+    if arg == "daily" or arg == "weekly" then
+        ns.OpenMenu(arg)
+        return
+    end
+
+    if arg == "take" then
+        for _, kind in ipairs(ns.KINDS) do
+            if ns.KindState(kind) == "available" then
+                ns.OpenMenu(kind)
+                return
+            end
+        end
+        Print("нечего брать - всё либо в журнале, либо уже выполнено")
+        return
+    end
+
+    local action, kind = arg:match("^(%a+)%s+(%a+)$")
+    if (action == "done" or action == "undone") and (kind == "daily" or kind == "weekly") then
+        if action == "done" then
+            MarkDone(kind, nil, false)
+            Print(ns.KIND_LABEL[kind] .. ": отмечено выполненным до сброса")
+        else
+            AccountDone()[kind] = nil
+            Print(ns.KIND_LABEL[kind] .. ": отметка снята")
+            if ns.Refresh then ns.Refresh() end
+        end
+        return
+    end
+
+    local minutes = arg:match("^remind%s+(%d+)$")
+    if minutes then
+        DB().remindMinutes = tonumber(minutes)
+        Print("напоминать раз в " .. minutes .. " мин (0 - выключить)")
+        return
+    end
+
+    if arg == "sound" then
+        DB().sound = (DB().sound == false)
+        Print("звук: " .. (DB().sound ~= false and "включён" or "выключён"))
+        return
+    end
+
+    if arg == "lock" then
+        DB().locked = not DB().locked
+        Print("окно " .. (DB().locked and "закреплено" or "можно двигать"))
+        return
+    end
+
+    if arg == "status" then
+        for _, kind in ipairs(ns.KINDS) do
+            local state = ns.KindState(kind)
+            Print(ns.KIND_LABEL[kind] .. ": " .. state)
+            local record = AccountDone()[kind]
+            if record and record.expires and record.expires > time() then
+                Print(format("   сдал %s (%s), сброс через %s",
+                    tostring(record.by),
+                    record.srv and "подтверждено сервером" or "замечено при сдаче",
+                    ns.FormatTime(record.expires - time())))
+            end
+            for _, held in ipairs(ns.OthersHolding(kind)) do
+                Print(format("   %s - %s: %d/%d%s", held.char, held.desc,
+                    held.c, held.n, held.done and " (готово к сдаче)" or ""))
+            end
+        end
+        Print(format("сброс: ежедневный %s, недельный %s",
+            date("%d.%m %H:%M", NextDailyReset()),
+            date("%d.%m %H:%M", NextWeeklyReset())))
+        return
+    end
+
+    Print("команды: |cff00ff00/circle|r окно, |cff00ff00take|r, |cff00ff00daily|r, |cff00ff00weekly|r, |cff00ff00status|r")
+    Print("ещё: |cff00ff00done daily|r, |cff00ff00undone weekly|r, |cff00ff00remind 30|r, |cff00ff00sound|r, |cff00ff00lock|r")
+end
