@@ -58,12 +58,18 @@ local function ShowTooltip(owner, anchor)
 
     GameTooltip:AddLine(" ")
     GameTooltip:AddLine("ЛКМ - открыть меню заданий", 0.4, 0.8, 1)
+    GameTooltip:AddLine("ПКМ - настройки", 0.4, 0.8, 1)
     GameTooltip:AddLine("Перетаскивание - переместить", 0.4, 0.8, 1)
     GameTooltip:Show()
 end
 
 -- Что делать по клику: берём первое, что требует действия.
-local function ActOnClick()
+-- Правая кнопка открывает настройки.
+local function ActOnClick(self, button)
+    if button == "RightButton" then
+        ns.OpenOptions()
+        return
+    end
     local pending, kind = ns.Pending()
     if not pending then
         kind = ns.KINDS[1]
@@ -104,7 +110,7 @@ local function BuildBadge()
     badge:SetMovable(true)
     badge:EnableMouse(true)
     badge:RegisterForDrag("LeftButton")
-    badge:RegisterForClicks("LeftButtonUp")
+    badge:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 
     badge.icon = badge:CreateTexture(nil, "ARTWORK")
     badge.icon:SetAllPoints(badge)
@@ -167,7 +173,7 @@ local function BuildMinimapButton()
     minimapButton:SetHeight(31)
     minimapButton:SetFrameStrata("MEDIUM")
     minimapButton:SetFrameLevel(8)
-    minimapButton:RegisterForClicks("LeftButtonUp")
+    minimapButton:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     minimapButton:RegisterForDrag("LeftButton")
 
     minimapButton.icon = minimapButton:CreateTexture(nil, "BACKGROUND")

@@ -88,7 +88,7 @@ local function BuildOptions()
             check:SetChecked(key == ns.Style())
         end
         sound:SetChecked(db.sound ~= false)
-        slider:SetValue(db.remindMinutes or 30)
+        slider:SetValue(db.remindMinutes or 0)
     end
 
     panel:SetScript("OnShow", panel.refresh)

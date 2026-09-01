@@ -86,7 +86,16 @@ end
 -- "list" - список строк в стиле трекера Questie
 function ns.Style()
     local style = ns.DB and ns.DB().style
-    return style or "badge"
+    return style or "minimap"
+end
+
+-- Открыть свою страницу в настройках игры. В 3.3.5a первый вызов только
+-- разворачивает список категорий, поэтому зовём дважды - иначе откроется
+-- не та страница.
+function ns.OpenOptions()
+    if not (InterfaceOptionsFrame_OpenToCategory and ns.optionsPanel) then return end
+    InterfaceOptionsFrame_OpenToCategory(ns.optionsPanel)
+    InterfaceOptionsFrame_OpenToCategory(ns.optionsPanel)
 end
 
 -- ------------------------------------------------------------- сохранения --
@@ -458,8 +467,18 @@ ev:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" then
         if arg1 ~= ADDON then return end
         local db = DB()
-        if db.remindMinutes == nil then db.remindMinutes = 30 end
         if db.shown == nil then db.shown = true end
+        if db.remindMinutes == nil then db.remindMinutes = 0 end
+
+        -- Значения по умолчанию поменялись уже после первых установок:
+        -- напоминания выключены, вид - кнопка у миникарты. Применяем один раз,
+        -- чтобы не переписывать то, что игрок выбрал сам потом.
+        if not db.ver then
+            db.ver = 2
+            db.remindMinutes = 0
+            db.style = db.style or "minimap"
+        end
+
         ns.Build()
 
     elseif event == "GOSSIP_SHOW" then
