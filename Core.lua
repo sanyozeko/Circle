@@ -138,6 +138,37 @@ local function AccountDone()
 end
 ns.AccountDone = AccountDone
 
+-- Список награждённых квестов у сервера означает "когда-то выполнял", а не
+-- "выполнил в этом периоде": при сбросе ядро его не чистит. Поэтому id, по
+-- которому отметка уже протухла, запоминается — иначе ответ сервера ставил бы
+-- её заново каждый раз, и задание вечно числилось бы выполненным.
+-- Именно множество, а не одно значение: сервер накапливает все когда-либо
+-- выполненные задания, и после каждого сброса воскрешал бы отметку через
+-- следующий по счёту id.
+local function StaleSet(kind)
+    local db = DB()
+    db.stale = db.stale or {}
+    local realm = Realm()
+    db.stale[realm] = db.stale[realm] or {}
+    local set = db.stale[realm][kind]
+    if type(set) ~= "table" then       -- переживаем старый формат: одно число
+        set = {}
+        db.stale[realm][kind] = set
+    end
+    return set
+end
+
+-- Снять отметку, если её срок вышел. Вызывается и при отрисовке, и до разбора
+-- ответа сервера: иначе ответ успевал бы воскресить отметку раньше, чем мы
+-- заметим, что период уже закончился.
+local function PurgeExpired(kind)
+    local record = AccountDone()[kind]
+    if record and record.expires and time() >= record.expires then
+        if record.questId then StaleSet(kind)[record.questId] = true end
+        AccountDone()[kind] = nil
+    end
+end
+
 -- Срезы состояния по персонажам: клиент видит журнал только текущего.
 local function Snapshots()
     local db = DB()
@@ -245,22 +276,15 @@ function ns.ServerSaysDone(questId)
 end
 
 -- "done" | "inlog" | "elsewhere" | "available"
+-- Единственный источник правды - отметка со сроком: срок считается от часов
+-- сервера, а его список наград после сброса врёт.
 function ns.KindState(kind)
-    local inLog = false
     for id, quest in pairs(ns.QUESTS) do
-        if quest.kind == kind then
-            if completed and completed[id] then return "done" end
-            if InQuestLog(id) then inLog = true end
-        end
+        if quest.kind == kind and InQuestLog(id) then return "inlog" end
     end
 
-    if inLog then return "inlog" end
-
-    local record = AccountDone()[kind]
-    if record then
-        if record.expires and time() < record.expires then return "done" end
-        AccountDone()[kind] = nil       -- срок вышел
-    end
+    PurgeExpired(kind)
+    if AccountDone()[kind] then return "done" end
 
     if #ns.OthersHolding(kind) > 0 then return "elsewhere" end
     return "available"
@@ -316,6 +340,7 @@ end
 
 -- --------------------------------------------------------------- сдача ----
 local function MarkDone(kind, questId, fromServer)
+    if questId then StaleSet(kind)[questId] = nil end   -- выполнено по-настоящему
     AccountDone()[kind] = {
         expires = ResetFor(kind),
         by      = UnitName("player"),
@@ -515,6 +540,18 @@ ev:SetScript("OnEvent", function(_, event, arg1)
             db.ver = 2
             db.remindMinutes = 0
         end
+        if db.ver < 7 then
+            db.ver = 7
+            db.done = {}
+            db.stale = {}       -- сменился формат: было число, стало множество
+        end
+        if db.ver < 6 then
+            db.ver = 6
+            -- Отметки могли быть воскрешены ответом сервера уже после сброса,
+            -- с сроком на следующий период. Сбрасываем один раз.
+            db.done = {}
+            db.stale = {}
+        end
         if db.ver < 5 then
             db.ver = 5
             -- Старые отметки лежали одной кучей на весь аккаунт, без реалма.
@@ -561,19 +598,31 @@ ev:SetScript("OnEvent", function(_, event, arg1)
         local me = UnitName("player")
         local done = AccountDone()
         for _, kind in ipairs(ns.KINDS) do
-            local finishedId
+            PurgeExpired(kind)
+
+            -- Сервер отдаёт ВСЕ когда-либо награждённые квесты, включая тот, по
+            -- которому отметка уже протухла. Берём любой другой: именно он
+            -- означает настоящую сдачу в этом периоде.
+            local stale = StaleSet(kind)
+            local finishedId, anyReported = nil, false
             for id, quest in pairs(ns.QUESTS) do
-                if quest.kind == kind and t[id] then finishedId = id break end
+                if quest.kind == kind and t[id] then
+                    anyReported = true
+                    if not stale[id] then finishedId = id break end
+                end
             end
 
             local record = done[kind]
             if finishedId then
                 MarkDone(kind, finishedId, true)
-            elseif record and record.srv and record.by == me then
-                -- Сервер по тому же персонажу говорит "не выполнено" - был сброс.
-                -- Отметки, поставленные по факту сдачи, так снимать нельзя:
-                -- про ежедневные сервер молчит всегда.
-                done[kind] = nil
+            elseif not anyReported then
+                -- Сервер не помнит по этой группе вообще ничего.
+                for id in pairs(stale) do stale[id] = nil end
+                if record and record.srv and record.by == me then
+                    -- Отметку, поставленную по факту сдачи, так снимать нельзя:
+                    -- про ежедневные сервер молчит всегда.
+                    done[kind] = nil
+                end
             end
         end
         if ns.Refresh then ns.Refresh() end
