@@ -44,9 +44,6 @@ local MENU_PATH = {
 -- клиенте: MPEG-1 Layer III, 44100 Гц, 128 кбит/с, без ID3-тега.
 local ALERT_SOUND = "Interface\\AddOns\\Circle-DailyWeekly\\Sounds\\alert.mp3"
 
-local QUERY_THROTTLE = 60
-local QUERY_INTERVAL = 300
-
 -- ===========================================================================
 
 local floor, format = math.floor, string.format
@@ -142,29 +139,10 @@ ns.AccountDone = AccountDone
 -- "выполнил в этом периоде": при сбросе ядро его не чистит. Поэтому id, по
 -- которому отметка уже протухла, запоминается — иначе ответ сервера ставил бы
 -- её заново каждый раз, и задание вечно числилось бы выполненным.
--- Именно множество, а не одно значение: сервер накапливает все когда-либо
--- выполненные задания, и после каждого сброса воскрешал бы отметку через
--- следующий по счёту id.
-local function StaleSet(kind)
-    local db = DB()
-    db.stale = db.stale or {}
-    local realm = Realm()
-    db.stale[realm] = db.stale[realm] or {}
-    local set = db.stale[realm][kind]
-    if type(set) ~= "table" then       -- переживаем старый формат: одно число
-        set = {}
-        db.stale[realm][kind] = set
-    end
-    return set
-end
-
--- Снять отметку, если её срок вышел. Вызывается и при отрисовке, и до разбора
--- ответа сервера: иначе ответ успевал бы воскресить отметку раньше, чем мы
--- заметим, что период уже закончился.
+-- Снять отметку, если её срок вышел.
 local function PurgeExpired(kind)
     local record = AccountDone()[kind]
     if record and record.expires and time() >= record.expires then
-        if record.questId then StaleSet(kind)[record.questId] = true end
         AccountDone()[kind] = nil
     end
 end
@@ -256,24 +234,11 @@ function ns.FormatTime(seconds)
     return format("%dм", m)
 end
 
--- ------------------------------------------------------- состояние сервера --
--- Список награждённых квестов - единственный надёжный источник для еженедельных.
--- Ежедневные ядро туда не кладёт, для них работает наблюдение за сдачей.
-local completed = nil
-local lastQuery = 0
-
-local function Query(force)
-    if not QueryQuestsCompleted then return end
-    local now = GetTime()
-    if (not force) and (now - lastQuery) < QUERY_THROTTLE then return end
-    lastQuery = now
-    pcall(QueryQuestsCompleted)
-end
-ns.Query = Query
-
-function ns.ServerSaysDone(questId)
-    return completed and completed[questId] or false
-end
+-- Список выполненных квестов у сервера здесь не используется. Он означает
+-- "когда-то получал награду" и при сбросе не чистится, поэтому отличить по
+-- нему "сдал в этом периоде" невозможно: сразу после сброса он снова говорил бы
+-- "выполнено". Единственный надёжный сигнал - момент получения награды, его и
+-- ловим хуком ниже.
 
 -- "done" | "inlog" | "elsewhere" | "available"
 -- Единственный источник правды - отметка со сроком: срок считается от часов
@@ -339,13 +304,11 @@ function ns.OthersHolding(kind)
 end
 
 -- --------------------------------------------------------------- сдача ----
-local function MarkDone(kind, questId, fromServer)
-    if questId then StaleSet(kind)[questId] = nil end   -- выполнено по-настоящему
+local function MarkDone(kind, questId)
     AccountDone()[kind] = {
         expires = ResetFor(kind),
         by      = UnitName("player"),
         questId = questId,
-        srv     = fromServer and true or false,
     }
     if ns.Refresh then ns.Refresh() end
 end
@@ -358,7 +321,7 @@ local function NoteTurnIn(questTitle)
     local title = Norm(questTitle)
     for id, quest in pairs(ns.QUESTS) do
         if Norm(quest.name) == title then
-            MarkDone(quest.kind, id, false)
+            MarkDone(quest.kind, id)
             Print(ns.KIND_LABEL[quest.kind] .. " задание сдано.")
             return
         end
@@ -509,7 +472,7 @@ ns.Announce = Announce
 local ev = CreateFrame("Frame")
 ns.events = ev
 
-local queryDelay, pollTimer, tickTimer = nil, 0, 0
+local tickTimer = 0
 local remindTimer, loginTimer = 0, nil
 
 -- PLAYER_ENTERING_WORLD приходит на КАЖДОМ экране загрузки: вход в подземелье,
@@ -519,7 +482,6 @@ local greeted = false
 
 ev:RegisterEvent("ADDON_LOADED")
 ev:RegisterEvent("PLAYER_ENTERING_WORLD")
-ev:RegisterEvent("QUEST_QUERY_COMPLETE")
 ev:RegisterEvent("QUEST_LOG_UPDATE")
 ev:RegisterEvent("QUEST_COMPLETE")
 ev:RegisterEvent("QUEST_FINISHED")
@@ -540,10 +502,11 @@ ev:SetScript("OnEvent", function(_, event, arg1)
             db.ver = 2
             db.remindMinutes = 0
         end
-        if db.ver < 7 then
-            db.ver = 7
+        if db.ver < 8 then
+            db.ver = 8
+            -- Отметки могли быть поставлены с ответа сервера уже после сброса.
             db.done = {}
-            db.stale = {}       -- сменился формат: было число, стало множество
+            db.stale = nil      -- больше не нужно
         end
         if db.ver < 6 then
             db.ver = 6
@@ -579,80 +542,23 @@ ev:SetScript("OnEvent", function(_, event, arg1)
 
     elseif event == "PLAYER_ENTERING_WORLD" then
         logIndexDirty = true
-        queryDelay = 5
         UpdateSnapshot()
         if not greeted then
             greeted = true
             loginTimer = 0
         end
 
-    elseif event == "QUEST_QUERY_COMPLETE" then
-        if not GetQuestsCompleted then return end
-        local t = {}
-        local ok, r = pcall(GetQuestsCompleted, t)
-        if not ok then return end
-        if type(r) == "table" then t = r end
-        completed = t
-
-        -- Сверяем аккаунтную отметку с ответом сервера.
-        local me = UnitName("player")
-        local done = AccountDone()
-        for _, kind in ipairs(ns.KINDS) do
-            PurgeExpired(kind)
-
-            -- Сервер отдаёт ВСЕ когда-либо награждённые квесты, включая тот, по
-            -- которому отметка уже протухла. Берём любой другой: именно он
-            -- означает настоящую сдачу в этом периоде.
-            local stale = StaleSet(kind)
-            local finishedId, anyReported = nil, false
-            for id, quest in pairs(ns.QUESTS) do
-                if quest.kind == kind and t[id] then
-                    anyReported = true
-                    if not stale[id] then finishedId = id break end
-                end
-            end
-
-            local record = done[kind]
-            if finishedId then
-                MarkDone(kind, finishedId, true)
-            elseif not anyReported then
-                -- Сервер не помнит по этой группе вообще ничего.
-                for id in pairs(stale) do stale[id] = nil end
-                if record and record.srv and record.by == me then
-                    -- Отметку, поставленную по факту сдачи, так снимать нельзя:
-                    -- про ежедневные сервер молчит всегда.
-                    done[kind] = nil
-                end
-            end
-        end
-        if ns.Refresh then ns.Refresh() end
-
     elseif event == "QUEST_COMPLETE" then
         pendingTurnIn = GetTitleText and GetTitleText() or nil
-
-    elseif event == "QUEST_FINISHED" then
-        queryDelay = 3
 
     elseif event == "QUEST_LOG_UPDATE" then
         logIndexDirty = true
         UpdateSnapshot()
-        Query()
         if ns.Refresh then ns.Refresh() end
     end
 end)
 
 ev:SetScript("OnUpdate", function(_, elapsed)
-    if queryDelay then
-        queryDelay = queryDelay - elapsed
-        if queryDelay <= 0 then queryDelay = nil; Query(true) end
-    end
-
-    pollTimer = pollTimer + elapsed
-    if pollTimer >= QUERY_INTERVAL then
-        pollTimer = 0
-        Query()
-    end
-
     tickTimer = tickTimer + elapsed
     if tickTimer >= 1 then
         tickTimer = 0
@@ -710,7 +616,7 @@ SlashCmdList["CIRCLEDW"] = function(msg)
     local action, kind = arg:match("^(%a+)%s+(%a+)$")
     if (action == "done" or action == "undone") and (kind == "daily" or kind == "weekly") then
         if action == "done" then
-            MarkDone(kind, nil, false)
+            MarkDone(kind, nil)
             Print(ns.KIND_LABEL[kind] .. ": отмечено выполненным до сброса")
         else
             AccountDone()[kind] = nil
@@ -766,10 +672,8 @@ SlashCmdList["CIRCLEDW"] = function(msg)
             Print(ns.KIND_LABEL[kind] .. ": " .. state)
             local record = AccountDone()[kind]
             if record and record.expires and record.expires > time() then
-                Print(format("   сдал %s (%s), сброс через %s",
-                    tostring(record.by),
-                    record.srv and "подтверждено сервером" or "замечено при сдаче",
-                    ns.FormatTime(record.expires - time())))
+                Print(format("   сдал %s, сброс через %s",
+                    tostring(record.by), ns.FormatTime(record.expires - time())))
             end
             for _, held in ipairs(ns.OthersHolding(kind)) do
                 Print(format("   %s - %s: %d/%d%s", held.char, held.desc,
